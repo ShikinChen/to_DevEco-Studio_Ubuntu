@@ -1,0 +1,399 @@
+import argparse
+import sys
+import io
+import os
+import struct
+import subprocess
+import re
+import shutil
+import json
+
+
+class CustomArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_help()
+
+
+def check_install(name):
+    result = subprocess.run(["which", name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.returncode == 0
+
+
+def run_command(command):
+    # 运行命令并捕获输出
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True  # 自动将输出转换为字符串
+    )
+
+    # 实时读取并显示标准输出
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+
+    # 等待进程结束并获取返回码
+    process.stdout.close()
+    process.wait()
+
+    # 获取标准错误输出（如果有）
+    stderr_output = process.stderr.read()
+
+    # 如果有错误输出，显示
+    if stderr_output:
+        print(f"错误信息: {stderr_output}")
+
+    return process.returncode
+
+
+def unpack_dmg(dmg_file, dir_path):
+    if not dmg_file:
+        print(
+            f"未找到包含 deveco-studio*.dmg 镜像,请下载 Mac (X86) 版本的 DevEco Studio ,解压并且将dmg镜像放进文件夹{dir_path}")
+        print("https://developer.huawei.com/consumer/cn/download/")
+        sys.exit(1)
+    deveco_studio_result = os.path.join(dir_path, "deveco-studio_result.txt")
+    img_file = os.path.join(dir_path, "deveco-studio.img")
+    img_dir = os.path.join(dir_path, "DevEco-Studio-Img")
+    dev_eco_studio_dir = os.path.join(img_dir, "DevEco-Studio")
+    hfsx_file = os.path.join(img_dir, "disk image.hfsx")
+    try:
+        if not os.path.exists(deveco_studio_result):
+            if os.path.exists(img_file):
+                os.remove(img_file)
+            if os.path.exists(hfsx_file):
+                os.remove(hfsx_file)
+            if os.path.exists(img_dir):
+                shutil.rmtree(img_dir)
+            return_code = run_command(["dmg2img", dmg_file, img_file])
+            if return_code != 0:
+                print(
+                    f"{dmg_file}转换失败")
+                sys.exit(1)
+            return_code = run_command(["7z", "x", img_file, f"-o{img_dir}"])
+            if return_code != 0:
+                print(
+                    f"{dmg_file}解包失败")
+                sys.exit(1)
+            return_code = run_command(["7z", "x", hfsx_file, f"-o{img_dir}"])
+            with open(deveco_studio_result, "x") as file:
+                pass
+    except Exception as e:
+        print(f"{e}")
+        sys.exit(1)
+    return dev_eco_studio_dir
+
+
+def unpack_ctl(ctl_file, dir_path):
+    if not ctl_file:
+        print(
+            f"未找到包含 commandline-tools-linux 压缩文件,请下载 Linux 版本的 commandline-tools ,解压并且将zip文件放进文件夹{dir_path}")
+        print("https://developer.huawei.com/consumer/cn/download/")
+        sys.exit(1)
+    ctl_dir = os.path.join(dir_path, "command-line-tools")
+    ctl_result = os.path.join(dir_path, "ctl_result.txt")
+    try:
+        if not os.path.exists(ctl_result):
+            if os.path.exists(ctl_dir):
+                shutil.rmtree(ctl_dir)
+            return_code = run_command(["unzip", ctl_file, "-d", dir_path])
+            if return_code != 0:
+                print(
+                    f"{ctl_dir}解压失败")
+                sys.exit(1)
+            return_code = run_command(["chmod", "a+xw", "-R", ctl_dir])
+            with open(ctl_result, "x") as file:
+                pass
+    except Exception as e:
+        print(f"{e}")
+        sys.exit(1)
+    return ctl_dir
+
+
+def read_json_file(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        return data
+    except json.JSONDecodeError as e:
+        print(f"JSON 解码错误: {e}")
+    except FileNotFoundError:
+        print(f"文件 '{file_path}' 不存在。")
+    except Exception as e:
+        print(f"发生错误: {e}")
+
+
+def get_version(build_number):
+    version_parts = build_number.split('.')
+    return version_parts[0], version_parts[1], version_parts[2]
+
+
+def copy_jar_files(src_dir, dest_dir):
+    if not os.path.exists(dest_dir):
+        return
+
+    for root, _, files in os.walk(src_dir):
+        for file in files:
+            if file.endswith(".jar"):
+                relative_path = os.path.relpath(root, src_dir)
+                target_dir = os.path.join(dest_dir, relative_path)
+                os.makedirs(target_dir, exist_ok=True)
+                src_file = os.path.join(root, file)
+                dest_file = os.path.join(target_dir, file)
+
+                shutil.copy2(src_file, dest_file)
+                print(f"已复制: {src_file} -> {dest_file}")
+
+
+def copy_directory_with_structure(src_dir, dest_dir):
+    try:
+        for root, dirs, files in os.walk(src_dir):
+            relative_path = os.path.relpath(root, src_dir)
+            target_dir = os.path.join(dest_dir, relative_path)
+            os.makedirs(target_dir, exist_ok=True)
+            for file in files:
+                src_file = os.path.join(root, file)
+                dest_file = os.path.join(target_dir, file)
+
+                shutil.copy2(src_file, dest_file)
+                print(f"已复制: {src_file} -> {dest_file}")
+    except Exception as e:
+        print(f"发生错误: {e}")
+        sys.exit(1)
+
+
+def to_absolute_path(path):
+    if not os.path.isabs(path):
+        abs_path = os.path.abspath(path)
+        return abs_path
+    else:
+        return path
+
+
+def copy_sdk(ctl_dir, idea_dir):
+    sdk_dir = os.path.join(ctl_dir, "sdk")
+    copy_directory_with_structure(sdk_dir, os.path.join(idea_dir, "sdk"))
+
+    hvigor_dir = os.path.join(ctl_dir, "hvigor")
+    copy_directory_with_structure(hvigor_dir, os.path.join(idea_dir, "tools/hvigor"))
+
+    ohpm_dir = os.path.join(ctl_dir, "ohpm")
+    copy_directory_with_structure(ohpm_dir, os.path.join(idea_dir, "tools/ohpm"))
+
+    node_dir = os.path.join(ctl_dir, "tool/node")
+    copy_directory_with_structure(node_dir, os.path.join(idea_dir, "tools/node"))
+
+    llvm_dir = os.path.join(dev_eco_studio_app_dir, "tools/llvm")
+    copy_directory_with_structure(llvm_dir, os.path.join(idea_dir, "tools/llvm"))
+
+
+def link_file(src_path, dst_path):
+    if not os.path.exists(dst_path) and os.path.exists(src_path):
+        run_command(["ln", "-s", src_path, dst_path])
+
+
+def link_sdk(ctl_dir, idea_dir, dev_eco_studio_app_dir):
+    sdk_dir = os.path.join(ctl_dir, "sdk")
+    link_file(sdk_dir, os.path.join(idea_dir, "sdk"))
+
+    idea_tools_dir = os.path.join(idea_dir, "tools")
+    if not os.path.exists(idea_tools_dir):
+        os.makedirs(idea_tools_dir, exist_ok=True)
+
+    hvigor_dir = os.path.join(ctl_dir, "hvigor")
+    link_file(hvigor_dir, os.path.join(idea_tools_dir, "hvigor"))
+
+    ohpm_dir = os.path.join(ctl_dir, "ohpm")
+    link_file(ohpm_dir, os.path.join(idea_tools_dir, "ohpm"))
+
+    node_dir = os.path.join(ctl_dir, "tool/node")
+    link_file(node_dir, os.path.join(idea_tools_dir, "node"))
+
+    llvm_dir = os.path.join(dev_eco_studio_app_dir, "tools/llvm")
+    copy_directory_with_structure(llvm_dir, os.path.join(idea_dir, "tools/llvm"))
+
+
+def copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json):
+    jars_result = os.path.join(dev_eco_studio_app_dir, "jars_result.txt")
+    if not os.path.exists(jars_result):
+        idea_lib_dir = os.path.join(idea_dir, "lib")
+        idea_plugins_dir = os.path.join(idea_dir, "plugins")
+
+        shutil.rmtree(idea_plugins_dir)
+        dev_eco_studio_lib_dir = os.path.join(dev_eco_studio_app_dir, "lib")
+        dev_eco_studio_plugins_dir = os.path.join(dev_eco_studio_app_dir, "plugins")
+
+        copy_jar_files(dev_eco_studio_lib_dir, idea_lib_dir)
+        copy_directory_with_structure(dev_eco_studio_plugins_dir, idea_plugins_dir)
+
+        hamony_tool_home = os.environ.get('HAMONY_TOOL_HOME')
+        if hamony_tool_home and os.path.exists(hamony_tool_home):
+            link_sdk(hamony_tool_home, idea_dir, dev_eco_studio_app_dir)
+        else:
+            copy_sdk(ctl_dir, idea_dir)
+
+        devecostudio_svg = "bin/devecostudio.svg"
+        shutil.copy2(os.path.join(dev_eco_studio_app_dir, devecostudio_svg),
+                     os.path.join(idea_dir, devecostudio_svg))
+
+        with open(jars_result, "x") as file:
+            pass
+
+    idea_sh = os.path.join(idea_dir, "bin/idea.sh")
+    idea_bak_sh = os.path.join(idea_dir, "bin/idea_bak.sh")
+
+    if not os.path.exists(idea_bak_sh):
+        shutil.copy2(idea_sh,
+                     idea_bak_sh)
+
+    launch = product_info_json["launch"][0]
+    boot_class_path_jar_names = launch["bootClassPathJarNames"]
+    additional_jvm_arguments = launch["additionalJvmArguments"]
+
+    class_path_list = []
+    for index, boot_class_path_jar_name in enumerate(boot_class_path_jar_names):
+        if index == 0:
+            class_path_list.append(f"CLASS_PATH=\"$IDE_HOME/lib/{boot_class_path_jar_name}\"\n")
+        else:
+            class_path_list.append(f"CLASS_PATH=\"$CLASS_PATH:$IDE_HOME/lib/{boot_class_path_jar_name}\"\n")
+    vendor_name = None
+    paths_selector = None
+    platform_prefix = None
+    for additional_jvm_argument in additional_jvm_arguments:
+        if "idea.vendor.name" in additional_jvm_argument:
+            vendor_name = additional_jvm_argument
+        elif "idea.paths.selector" in additional_jvm_argument:
+            paths_selector = additional_jvm_argument
+        elif "idea.platform.prefix" in additional_jvm_argument:
+            platform_prefix = additional_jvm_argument
+
+    with open(idea_bak_sh, 'r') as file:
+        is_append_class_path = False
+        is_split_d = False
+        result = []
+        for line in file:
+            if is_split_d and line.strip().startswith("-D"):
+                arr = line.strip().split(" ")
+                for index, item in enumerate(arr):
+                    if item.startswith("-Didea.vendor.name") and vendor_name:
+                        result.append(f"{vendor_name}")
+                    elif item.startswith("-Didea.paths.selector") and paths_selector:
+                        result.append(f"{paths_selector}")
+                    elif item.startswith("-Didea.platform.prefix") and platform_prefix:
+                        result.append(f"{platform_prefix}")
+                    elif len(arr) - 1 == index:
+                        result.append(" \\\n")
+                    else:
+                        result.append(f"{item}")
+                    if len(arr) - 2 > index:
+                        result.append(" \\\n")
+
+                is_split_d = False
+                continue
+
+            if not line.strip().startswith("CLASS_PATH"):
+                result.append(line)
+                if line.strip().startswith("${IDE_PROPERTIES_PROPERTY}"):
+                    is_split_d = True
+            elif not is_append_class_path:
+                is_append_class_path = True
+                result.extend(class_path_list)
+
+    content = ''.join(result)
+    # print(f"content:{content}")
+    with open(idea_sh, 'w') as file:
+        file.write(content)
+
+
+def create_desktop(install_path):
+    desktop_content = f"""[Desktop Entry]
+Name=DevEco-Studio
+Exec=\"{install_path}/bin/idea.sh\" %f
+Icon={install_path}/bin/devecostudio.svg
+Type=Application
+Categories=Development;Hamony;IDE;
+Terminal=false
+StartupWMClass=huawei-deveco-studio
+StartupNotify=true
+    """
+    home_dir = os.path.expanduser("~")
+    desktop_path = os.path.join(home_dir, ".local/share/applications/DevEco-Studio.desktop")
+    with open(desktop_path, 'w') as file:
+        file.write(desktop_content)
+
+
+if __name__ == "__main__":
+    parser = CustomArgumentParser(description="将DevEco-Studio进行Ubuntu移植")
+    parser.add_argument('-d', '--dir', type=str,
+                        help='包含deveco-studio*.img和commandline-tools-linux-x64*.zip文件夹路径')
+    parser.add_argument('-p', '--prefix', type=str,
+                        help='安装路径,有安装路径会创建快捷图标')
+
+    if not check_install("7z") or not check_install("dmg2img"):
+        msg = "安装 p7zip-full, dmg2img 失败"
+        try:
+            subprocess.run(["sudo", "apt", "install", "-y", "p7zip-full", "dmg2img"], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"{msg}：{e}")
+            sys.exit(1)
+
+    stderr_backup = sys.stderr
+    sys.stderr = io.StringIO()
+
+    args, unknown = parser.parse_known_args()
+    dir_path = args.dir
+    if not dir_path:
+        if unknown:
+            dir_path = unknown[0]
+        else:
+            sys.exit(1)
+    dir_path = to_absolute_path(dir_path)
+    if not os.path.exists(dir_path):
+        print(f"{dir_path} 不存在")
+        sys.exit(1)
+
+    files = [f for f in os.listdir(dir_path)]
+    dmg_file = None
+    ctl_file = None
+    idea_dir = None
+    for file in files:
+        if re.match(r"deveco-studio-.*\.dmg", file):
+            dmg_file = os.path.join(dir_path, file)
+        if re.match(r"commandline-tools-linux-.*\.zip", file):
+            ctl_file = os.path.join(dir_path, file)
+        if re.match(r"idea-IC-*", file):
+            idea_dir = os.path.join(dir_path, file)
+
+    dev_eco_studio_dir = unpack_dmg(dmg_file, dir_path)
+    dev_eco_studio_app_dir = os.path.join(dev_eco_studio_dir, "DevEco-Studio.app/Contents")
+
+    product_info_json = read_json_file(os.path.join(dev_eco_studio_app_dir, "Resources/product-info.json"))
+
+    hamony_tool_home = os.environ.get('HAMONY_TOOL_HOME')
+    ctl_dir = None
+    if not hamony_tool_home or not os.path.exists(hamony_tool_home):
+        ctl_dir = unpack_ctl(ctl_file, dir_path)
+
+    build_number = product_info_json["buildNumber"]
+    major, minor, patch = get_version(build_number)
+    idea_name = f"idea-IC-{major}.{minor}.{patch}"
+    if not idea_dir or not idea_dir.endswith(idea_name):
+        print(
+            f"未找到包含 {idea_name} 文件夹,请下载 Linux 版本 IntelliJ IDEA Community Edition 的 Linux x86_64 (tar.gz) ,解压并且将文件夹放进{dir_path}")
+        print("https://www.jetbrains.com/zh-cn/idea/download/other.html")
+        sys.exit(1)
+
+    copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json)
+
+    prefix_path = args.prefix
+    if prefix_path:
+        if not os.path.exists(prefix_path):
+            os.makedirs(prefix_path)
+        install_path = os.path.join(prefix_path, "DevEco-Studio")
+        if os.path.exists(install_path):
+            shutil.rmtree(install_path)
+        shutil.copytree(idea_dir, install_path, symlinks=True)
+        create_desktop(install_path)
+        print(f"转换完成,并且安装路径:{install_path}")
+    else:
+        print(f"转换完成路径:{idea_dir}")
