@@ -19,6 +19,11 @@ def check_install(name):
     return result.returncode == 0
 
 
+def get_file_name_without_extension(file_path):
+    file_name, _ = os.path.splitext(os.path.basename(file_path))
+    return file_name
+
+
 def run_command(command):
     # 运行命令并捕获输出
     process = subprocess.Popen(
@@ -52,7 +57,7 @@ def unpack_dmg(dmg_file, dir_path):
             f"未找到包含 deveco-studio*.dmg 镜像,请下载 Mac (X86) 版本的 DevEco Studio ,解压并且将dmg镜像放进文件夹{dir_path}")
         print("https://developer.huawei.com/consumer/cn/download/")
         sys.exit(1)
-    deveco_studio_result = os.path.join(dir_path, "deveco-studio_result.txt")
+    deveco_studio_result = os.path.join(dir_path, f"{get_file_name_without_extension(dmg_file)}.txt")
     img_file = os.path.join(dir_path, "deveco-studio.img")
     img_dir = os.path.join(dir_path, "DevEco-Studio-Img")
     dev_eco_studio_dir = os.path.join(img_dir, "DevEco-Studio")
@@ -91,7 +96,7 @@ def unpack_ctl(ctl_file, dir_path):
         print("https://developer.huawei.com/consumer/cn/download/")
         sys.exit(1)
     ctl_dir = os.path.join(dir_path, "command-line-tools")
-    ctl_result = os.path.join(dir_path, "ctl_result.txt")
+    ctl_result = os.path.join(dir_path, f"{get_file_name_without_extension(ctl_file)}.txt")
     try:
         if not os.path.exists(ctl_result):
             if os.path.exists(ctl_dir):
@@ -188,11 +193,14 @@ def copy_sdk(ctl_dir, idea_dir):
 
 
 def link_file(src_path, dst_path):
-    if not os.path.exists(dst_path) and os.path.exists(src_path):
+    if not os.path.exists(dst_path) and (os.path.exists(src_path) or not os.path.isabs(src_path)):
         run_command(["ln", "-s", src_path, dst_path])
 
 
-def link_sdk(ctl_dir, idea_dir, dev_eco_studio_app_dir):
+def link_sdk(ctl_dir, idea_dir, dev_eco_studio_app_dir, is_absolute_path):
+    if not is_absolute_path:
+        ctl_dir = "../command-line-tools"
+
     sdk_dir = os.path.join(ctl_dir, "sdk")
     link_file(sdk_dir, os.path.join(idea_dir, "sdk"))
 
@@ -200,6 +208,8 @@ def link_sdk(ctl_dir, idea_dir, dev_eco_studio_app_dir):
     if not os.path.exists(idea_tools_dir):
         os.makedirs(idea_tools_dir, exist_ok=True)
 
+    if not is_absolute_path:
+        ctl_dir = f"../{ctl_dir}"
     hvigor_dir = os.path.join(ctl_dir, "hvigor")
     link_file(hvigor_dir, os.path.join(idea_tools_dir, "hvigor"))
 
@@ -213,8 +223,8 @@ def link_sdk(ctl_dir, idea_dir, dev_eco_studio_app_dir):
     copy_directory_with_structure(llvm_dir, os.path.join(idea_dir, "tools/llvm"))
 
 
-def copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json):
-    jars_result = os.path.join(dev_eco_studio_app_dir, "jars_result.txt")
+def copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json, prefix_path, dmg_name):
+    jars_result = os.path.join(dev_eco_studio_app_dir, f"{dmg_name}.txt")
     if not os.path.exists(jars_result):
         idea_lib_dir = os.path.join(idea_dir, "lib")
         idea_plugins_dir = os.path.join(idea_dir, "plugins")
@@ -227,8 +237,17 @@ def copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json):
         copy_directory_with_structure(dev_eco_studio_plugins_dir, idea_plugins_dir)
 
         hamony_tool_home = os.environ.get('HAMONY_TOOL_HOME')
+        is_absolute_path = True
+        if hamony_tool_home and prefix_path:
+            is_absolute_path = os.path.join(prefix_path, "command-line-tools") == hamony_tool_home
+            tmp = os.path.join(prefix_path, "command-line-tools")
+            index = hamony_tool_home.index(tmp)
+            if index == 0:
+                is_absolute_path = len(hamony_tool_home) - (index + len(tmp)) > 1
         if hamony_tool_home and os.path.exists(hamony_tool_home):
-            link_sdk(hamony_tool_home, idea_dir, dev_eco_studio_app_dir)
+            link_sdk(hamony_tool_home, idea_dir, dev_eco_studio_app_dir, is_absolute_path)
+        elif prefix_path:
+            link_sdk(hamony_tool_home, idea_dir, dev_eco_studio_app_dir, False)
         else:
             copy_sdk(ctl_dir, idea_dir)
 
@@ -369,10 +388,10 @@ if __name__ == "__main__":
 
     product_info_json = read_json_file(os.path.join(dev_eco_studio_app_dir, "Resources/product-info.json"))
 
-    hamony_tool_home = os.environ.get('HAMONY_TOOL_HOME')
-    ctl_dir = None
-    if not hamony_tool_home or not os.path.exists(hamony_tool_home):
-        ctl_dir = unpack_ctl(ctl_file, dir_path)
+    # hamony_tool_home = os.environ.get('HAMONY_TOOL_HOME')
+    # ctl_dir = None
+    # if not hamony_tool_home or not os.path.exists(hamony_tool_home):
+    ctl_dir = unpack_ctl(ctl_file, dir_path)
 
     build_number = product_info_json["buildNumber"]
     major, minor, patch = get_version(build_number)
@@ -383,15 +402,18 @@ if __name__ == "__main__":
         print("https://www.jetbrains.com/zh-cn/idea/download/other.html")
         sys.exit(1)
 
-    copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json)
-
     prefix_path = args.prefix
+    copy_to_idea(dev_eco_studio_app_dir, idea_dir, ctl_dir, product_info_json, prefix_path,
+                 get_file_name_without_extension(dmg_file))
+
     if prefix_path:
         if not os.path.exists(prefix_path):
             os.makedirs(prefix_path)
         install_path = os.path.join(prefix_path, "DevEco-Studio")
         if os.path.exists(install_path):
             shutil.rmtree(install_path)
+        copy_directory_with_structure(ctl_dir,
+                                      os.path.join(prefix_path, "command-line-tools"))
         shutil.copytree(idea_dir, install_path, symlinks=True)
         create_desktop(install_path)
         print(f"转换完成,并且安装路径:{install_path}")

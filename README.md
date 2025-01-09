@@ -62,7 +62,7 @@ Studio使用[idea社区版版本可以提前下载]((https://www.jetbrains.com/z
 ```shell
 ├── commandline-tools-linux-x64-5.0.5.310.zip
 ├── deveco-studio-5.0.5.315.dmg
-└── idea-IC-233.14475.28
+├── idea-IC-233.14475.28
 └── to_ubuntu.py
 ```
 
